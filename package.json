@@ -1,0 +1,22 @@
+{
+  "name": "shieldflow",
+  "version": "1.0.0",
+  "description": "ShieldFlow AI - Automated insurance lead nurturing system",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "twilio": "^4.19.0",
+    "@anthropic-ai/sdk": "^0.20.0",
+    "@supabase/supabase-js": "^2.39.0",
+    "resend": "^3.2.0",
+    "node-cron": "^3.0.3",
+    "dotenv": "^16.3.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
