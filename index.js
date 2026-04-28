@@ -28,7 +28,7 @@ const S = {
 const DAY = 86400;
 
 const CADENCE = [
-  { step: 0, delaySeconds: 0,       message: "Hi {name}! 👋 This is {agent} with {agency}, a Farmers Insurance agent here in Lubbock. You recently requested a {product} quote — I'd love to help you find the best rate. Got a quick moment?" },
+  { step: 0, delaySeconds: 0,       message: "Hi {name}! This is John Michael and I am a Farmers Insurance agent. You recently requested a {product} quote — I'd love to help you find the best rate. Got a quick moment?" },
   { step: 1, delaySeconds: 3600*2,  message: "Hey {name}! Still here whenever you're ready 😊 Many of my clients in Lubbock save $400–$800/year on their {product}. Worth a 5-min chat?" },
   { step: 2, delaySeconds: DAY*1,   message: "Good morning {name}! Quick question — are you bundling home and auto? Most clients save 15–25% combining both. Happy to run the numbers! 🏠🚗" },
   { step: 3, delaySeconds: DAY*3,   message: "Hi {name}, I know life gets busy! All I need is 5 minutes and your current policy info — I can usually beat what you're paying. Still interested? Reply YES!" },
