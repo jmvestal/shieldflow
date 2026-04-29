@@ -161,20 +161,22 @@ async function getAIReply(lead, incomingMessage) {
   const centralHour = centralDate.getHours();
   const centralDay  = centralDate.getDay();
   const isFriday    = centralDay === 5;
-  const isMidWeek   = centralDay === 3; // Wednesday
-  const isLateWeek  = centralDay === 4; // Thursday
+  const isMidWeek   = centralDay === 3;
+  const isLateWeek  = centralDay === 4;
   const timeContext = centralHour >= 17 && isFriday
-    ? "It is Friday evening. If wrapping up the conversation, wish them a great weekend — something like 'have a great weekend' or 'enjoy your weekend' feels natural here."
+    ? "REQUIRED: It is Friday evening. You MUST end your message with a warm weekend send-off. For example: 'Have a great weekend!' or 'Enjoy your weekend!' This is required on every message right now."
     : centralHour >= 18
-    ? "It is evening. If this is the last message of the day, close warmly — say something like 'have a good evening' or 'talk tomorrow morning' rather than just 'talk soon'."
+    ? "REQUIRED: It is evening. You MUST end every message with a warm evening closing. For example: 'Have a great night!' or 'Enjoy your evening!' or 'Talk tomorrow morning — have a good night!' Never just end with 'talk soon' or 'see you then' without adding a warm evening closing."
+    : centralHour >= 17
+    ? "REQUIRED: It is late afternoon heading into evening. End your message with something warm like 'Have a good evening!' or 'Hope your evening goes well!'"
     : centralHour < 10
-    ? "It is morning. Open warmly with a good morning reference if natural."
+    ? "It is morning. If natural, open with a good morning reference."
     : isMidWeek
-    ? "It is Wednesday — middle of the week. It feels natural to open with something like 'hope your week is going well so far' or 'hope you are having a good week' early in the conversation if it fits naturally. Don't force it."
+    ? "It is Wednesday. If natural, mention something like 'hope your week is going well so far.'"
     : isLateWeek
-    ? "It is Thursday — towards the end of the week. It feels natural to say something like 'hope it has been a good week so far' or 'almost to the weekend' if it fits naturally in the conversation. Don't force it."
+    ? "It is Thursday. If natural, mention something like 'hope it has been a good week so far.'"
     : isFriday
-    ? "It is Friday. You can reference the weekend if it fits naturally — something like 'hope you have a great weekend ahead' or 'almost the weekend'. Don't force it."
+    ? "It is Friday daytime. If natural, reference the upcoming weekend."
     : "It is daytime.";
 
   const response = await anthropic.messages.create({
