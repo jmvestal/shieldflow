@@ -55,10 +55,12 @@ function fill(template, lead) {
 }
 
 function isOfficeOpen() {
-  const now  = new Date();
-  const day  = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][now.getDay()];
+  // Convert to Central Time (UTC-5 standard, UTC-6 daylight)
+  const now        = new Date();
+  const centralTime = new Date(now.toLocaleString("en-US", { timeZone: "America/Chicago" }));
+  const day  = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][centralTime.getDay()];
   if (!S.officeHours.days.includes(day)) return false;
-  const mins = now.getHours() * 60 + now.getMinutes();
+  const mins = centralTime.getHours() * 60 + centralTime.getMinutes();
   if (day === "Sat") {
     const [sh, sm] = S.saturdayHours.start.split(":").map(Number);
     const [eh, em] = S.saturdayHours.end.split(":").map(Number);
@@ -193,10 +195,13 @@ async function updateLead(leadId, updates) {
 
 // Health check
 app.get("/health", (req, res) => {
+  const centralTime = new Date().toLocaleString("en-US", { timeZone: "America/Chicago" });
   res.json({
-    status: "ok", officeOpen: isOfficeOpen(),
-    agent: S.agentName, agency: S.agencyName,
-    time: new Date().toLocaleTimeString(),
+    status:      "ok",
+    officeOpen:  isOfficeOpen(),
+    agent:       S.agentName,
+    agency:      S.agencyName,
+    centralTime: centralTime,
   });
 });
 
