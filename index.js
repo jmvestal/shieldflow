@@ -98,7 +98,7 @@ async function getAIReply(lead, incomingMessage) {
   history.push({ role: "user", content: incomingMessage });
 
   const response = await anthropic.messages.create({
-    model:      "claude-sonnet-4-20250514",
+    model:      "claude-sonnet-4-5",
     max_tokens: 300,
     system: `You are John Michael, a friendly Farmers Insurance agent texting leads via SMS.
 Lead: ${(lead.name || "").split(" ")[0]}, interested in ${lead.product || "insurance"}, from ${lead.source || "online"}.
