@@ -21,15 +21,16 @@ const S = {
   agentName:  process.env.AGENT_NAME  || "John Michael Vestal",
   agencyName: process.env.AGENCY_NAME || "Vestal Agency",
   agentPhone: process.env.TWILIO_PHONE,
-  officeHours: { days: ["Mon","Tue","Wed","Thu","Fri"], start: "09:00", end: "17:00" },
-  afterHoursMsg: "Hey {name}! Thanks for reaching out 😊 Our office is currently closed but I'll personally follow up with you first thing when we open. Feel free to reply with any questions!",
+  officeHours: { days: ["Mon","Tue","Wed","Thu","Fri","Sat"], start: "08:00", end: "20:00" },
+  saturdayHours: { start: "09:00", end: "18:00" },
+  afterHoursMsg: "Hey {name}! Thanks for reaching out 😊 I'm not available right now but I'll personally follow up with you first thing when I'm back. Feel free to reply with any questions!",
 };
 
 const DAY = 86400;
 
 const CADENCE = [
   { step: 0, delaySeconds: 0,       message: "Hi {name}! This is John Michael and I am a Farmers Insurance agent. You recently requested a {product} quote — I'd love to help you find the best rate. Got a quick moment?" },
-  { step: 1, delaySeconds: 3600*2,  message: "Hey {name}! Still here whenever you're ready 😊 Many of my clients in Lubbock save $400–$800/year on their {product}. Worth a 5-min chat?" },
+  { step: 1, delaySeconds: 3600*2,  message: "Hey {name}! Still here whenever you're ready 😊 Many of my clients save $400–$800/year on their {product}. Worth a 5-min chat?" },
   { step: 2, delaySeconds: DAY*1,   message: "Good morning {name}! Quick question — are you bundling home and auto? Most clients save 15–25% combining both. Happy to run the numbers! 🏠🚗" },
   { step: 3, delaySeconds: DAY*3,   message: "Hi {name}, I know life gets busy! All I need is 5 minutes and your current policy info — I can usually beat what you're paying. Still interested? Reply YES!" },
   { step: 4, delaySeconds: DAY*5,   message: "Hi {name}! Rates in your area shifted this week — wanted to make sure you get a quote before they move again. No obligation, quick comparison. Worth a look? 📋" },
@@ -50,9 +51,14 @@ function isOfficeOpen() {
   const now  = new Date();
   const day  = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][now.getDay()];
   if (!S.officeHours.days.includes(day)) return false;
+  const mins = now.getHours() * 60 + now.getMinutes();
+  if (day === "Sat") {
+    const [sh, sm] = S.saturdayHours.start.split(":").map(Number);
+    const [eh, em] = S.saturdayHours.end.split(":").map(Number);
+    return mins >= sh * 60 + sm && mins < eh * 60 + em;
+  }
   const [sh, sm] = S.officeHours.start.split(":").map(Number);
   const [eh, em] = S.officeHours.end.split(":").map(Number);
-  const mins     = now.getHours() * 60 + now.getMinutes();
   return mins >= sh * 60 + sm && mins < eh * 60 + em;
 }
 
@@ -89,6 +95,7 @@ async function getAIReply(lead, incomingMessage) {
     max_tokens: 300,
     system: `You are John Michael, a friendly Farmers Insurance agent texting leads via SMS.
 Lead: ${(lead.name || "").split(" ")[0]}, interested in ${lead.product || "insurance"}, from ${lead.source || "online"}.
+${lead.status === "after_hours" ? "IMPORTANT: This lead sent messages after hours. Review their previous messages carefully and respond to everything they asked in one natural reply." : ""}
 Rules:
 - SMS only — 1 to 3 sentences MAX
 - Be warm, human, and natural. Never robotic.
@@ -191,8 +198,39 @@ app.post("/sms/inbound", async (req, res) => {
     let replyText;
 
     if (!isOfficeOpen()) {
+      // Check if we already sent an after-hours message to this lead tonight
+      const tonightStart = new Date();
+      tonightStart.setHours(0, 0, 0, 0);
+
+      const { data: afterHoursMsgs } = await supabase
+        .from("messages")
+        .select("id")
+        .eq("lead_id", lead.id)
+        .eq("direction", "outbound")
+        .gte("created_at", tonightStart.toISOString());
+
+      const alreadySentAfterHours = (afterHoursMsgs || []).length > 0 &&
+        lead.status === "after_hours";
+
+      if (alreadySentAfterHours) {
+        // Silently log — no reply. Claude will catch up in the morning.
+        await updateLead(lead.id, { status: "after_hours" });
+        console.log(`🌙 After-hours follow-up logged silently for ${lead.name}`);
+        return;
+      }
+
+      // First after-hours message — send the holding message
       replyText = fill(S.afterHoursMsg, lead);
+      await updateLead(lead.id, { status: "after_hours" });
+      const sid = await sendSMS(from, replyText);
+      await logMessage(lead.id, "outbound", replyText, sid);
+      return;
+
     } else {
+      // Office is open — if lead was in after_hours status, Claude catches up on everything they said
+      if (lead.status === "after_hours") {
+        console.log(`☀️ Office opened — catching up on after-hours messages for ${lead.name}`);
+      }
       replyText = await getAIReply(lead, body);
       if (isWarm(body) || isWarm(replyText)) {
         await updateLead(lead.id, { status: "warm" });
@@ -200,10 +238,9 @@ app.post("/sms/inbound", async (req, res) => {
       } else {
         await updateLead(lead.id, { status: "texting" });
       }
+      const sid = await sendSMS(from, replyText);
+      await logMessage(lead.id, "outbound", replyText, sid);
     }
-
-    const sid = await sendSMS(from, replyText);
-    await logMessage(lead.id, "outbound", replyText, sid);
 
   } catch (e) {
     console.error("❌ Inbound SMS error:", e.message);
