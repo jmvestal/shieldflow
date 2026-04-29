@@ -23,18 +23,25 @@ const S = {
   agentPhone: process.env.TWILIO_PHONE,
   officeHours: { days: ["Mon","Tue","Wed","Thu","Fri","Sat"], start: "08:00", end: "20:00" },
   saturdayHours: { start: "09:00", end: "18:00" },
-  afterHoursMsg: "Hey {name}! Thanks for reaching out 😊 I'm not available right now but I'll personally follow up with you first thing when I'm back. Feel free to reply with any questions!",
+  afterHoursMsg: "Hey {name}, thanks for reaching out. I'm not available right now but I'll personally follow up with you first thing when I'm back. Feel free to reply with any questions!",
 };
 
 const DAY = 86400;
 
+// Rotating first messages — cycles through for each new lead
+const FIRST_MESSAGES = [
+  "Hi {name}, this is John Michael and I am a Farmers Insurance agent. You recently requested a {product} quote — I'd love to help you out. Do you have a few minutes?",
+  "Hi {name}, this is John Michael and I am a Farmers Insurance agent. You recently requested a {product} quote — I'd love to get you the best rate possible. When's a good time to chat?",
+  "Hi {name}, this is John Michael and I am a Farmers Insurance agent. You recently requested a {product} quote — let's see what I can do for you. Do you have a few minutes today?",
+];
+
 const CADENCE = [
-  { step: 0, delaySeconds: 0,       message: "Hi {name}! This is John Michael and I am a Farmers Insurance agent. You recently requested a {product} quote — I'd love to help you find the best rate. Got a quick moment?" },
-  { step: 1, delaySeconds: 3600*2,  message: "Hey {name}! Still here whenever you're ready 😊 Many of my clients save $400–$800/year on their {product}. Worth a 5-min chat?" },
-  { step: 2, delaySeconds: DAY*1,   message: "Good morning {name}! Quick question — are you bundling home and auto? Most clients save 15–25% combining both. Happy to run the numbers! 🏠🚗" },
-  { step: 3, delaySeconds: DAY*3,   message: "Hi {name}, I know life gets busy! All I need is 5 minutes and your current policy info — I can usually beat what you're paying. Still interested? Reply YES!" },
-  { step: 4, delaySeconds: DAY*5,   message: "Hi {name}! Rates in your area shifted this week — wanted to make sure you get a quote before they move again. No obligation, quick comparison. Worth a look? 📋" },
-  { step: 5, delaySeconds: DAY*7,   message: "Last message from me for now, {name} 🙏 If you ever want to revisit your {product}, I'm one text away. Hope you're doing great!" },
+  { step: 0, delaySeconds: 0,       message: null }, // null = uses rotating first message
+  { step: 1, delaySeconds: 3600*2,  message: "Hey {name}, still here whenever you're ready. Many of my clients save $400-$800 a year on their {product}. Worth a 5-minute chat?" },
+  { step: 2, delaySeconds: DAY*1,   message: "Good morning {name}. Quick question — are you bundling home and auto? Most clients save 15-25% combining both. Happy to run the numbers either way." },
+  { step: 3, delaySeconds: DAY*3,   message: "Hi {name}, I know life gets busy. All I need is 5 minutes and your current policy info — I can usually beat what you're paying now. Still interested? Just reply YES." },
+  { step: 4, delaySeconds: DAY*5,   message: "Hi {name}, rates in your area shifted this week and I wanted to make sure you get a quote before they move again. No obligation, just a quick comparison. Worth a look?" },
+  { step: 5, delaySeconds: DAY*7,   message: "Last message from me for now, {name}. If you ever want to revisit your {product} coverage, I'm just a text away. Hope you're doing great." },
 ];
 
 const WARM_KEYWORDS = ["yes","yeah","sure","ready","now","call","available","free","connect","agent","interested","today","how much","quote","save","bundle","renewal","coverage","switching","cheaper"];
@@ -100,12 +107,13 @@ Rules:
 - SMS only — 1 to 3 sentences MAX
 - Be warm, human, and natural. Never robotic.
 - Always refer to yourself as John Michael
+- NO emojis — ever. Plain conversational text only.
 - You sell auto, home, renters, umbrella, life, and commercial insurance through Farmers
 - Key talking points: bundling savings, renewal timing, coverage gaps
 - Goal: get them to agree to a quick call or quote
-- When ready: "Great! Let me get you a quote — can I call you now or is there a better time?"
+- When ready: "Great, let me get you a quote — can I call you now or is there a better time?"
 - If not interested: be gracious, wish them well
-- Plain text only. No markdown or bullets.`,
+- Plain text only. No markdown, no bullets, no emojis.`,
     messages: history,
   });
   return response.content[0].text;
@@ -159,7 +167,10 @@ app.post("/ingest", async (req, res) => {
 
     console.log(`✅ New lead: ${name} | ${phone} | ${source} | ${product}`);
 
-    const firstMsg = fill(CADENCE[0].message, lead);
+    // Get total lead count to determine which rotating message to use
+    const { count } = await supabase.from("leads").select("*", { count: "exact", head: true });
+    const rotatingMsg = FIRST_MESSAGES[(count || 0) % FIRST_MESSAGES.length];
+    const firstMsg = fill(rotatingMsg, lead);
     const sid      = await sendSMS(phone, firstMsg);
     await logMessage(lead.id, "outbound", firstMsg, sid);
     await updateLead(lead.id, { status: "texting", sms_stage: 0 });
