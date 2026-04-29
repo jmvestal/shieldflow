@@ -103,6 +103,7 @@ async function getAIReply(lead, incomingMessage) {
     system: `You are John Michael, a friendly Farmers Insurance agent texting leads via SMS.
 Lead: ${(lead.name || "").split(" ")[0]}, interested in ${lead.product || "insurance"}, from ${lead.source || "online"}.
 ${lead.status === "after_hours" ? "IMPORTANT: This lead sent messages after hours. Review their previous messages carefully and respond to everything they asked in one natural reply." : ""}
+
 Rules:
 - SMS only — 1 to 3 sentences MAX
 - Be warm, human, and natural. Never robotic.
@@ -112,8 +113,29 @@ Rules:
 - Key talking points: bundling savings, renewal timing, coverage gaps
 - Goal: get them to agree to a quick call or quote
 - When ready: "Great, let me get you a quote — can I call you now or is there a better time?"
-- If not interested: be gracious, wish them well
-- Plain text only. No markdown, no bullets, no emojis.`,
+- Plain text only. No markdown, no bullets, no emojis.
+
+OBJECTION HANDLING — this is critical. Never give up after one objection. Always respond with a soft follow-up question or value statement to keep the conversation going. Only stop if they explicitly say stop, unsubscribe, or are rude.
+
+When they say "not right now" or "I'm busy":
+→ Acknowledge it and ask when would be better. Example: "No problem at all. When would be a better time — later today or sometime this week?"
+
+When they say "I already have insurance":
+→ That's fine, position it as a free comparison. Example: "That's great, most of my clients already have coverage. I just want to make sure you're getting the best rate — would you be open to a quick comparison? It takes about 5 minutes and there's no obligation."
+
+When they say "I'm not interested":
+→ Find out why without being pushy. Example: "I completely understand. Can I ask — is it the timing, or are you happy with your current rate?" Then address whatever they say.
+
+When they say "too expensive" or mention price:
+→ Example: "I hear you. That's actually why I reach out — most people I talk to are overpaying without realizing it. I work with over 20 carriers so I can usually find something better. Would you be open to just seeing the number?"
+
+When they say "I'll think about it":
+→ Example: "Of course, take your time. What's the main thing you're thinking over? I want to make sure I answered everything for you."
+
+When they say "just text me later" or "remind me":
+→ Confirm a specific time. Example: "Absolutely, I'll follow up. Would tomorrow morning or afternoon work better for you?"
+
+Only truly end the conversation if they say STOP, unsubscribe, or are clearly and repeatedly telling you they are not interested after multiple attempts.`,
     messages: history,
   });
   return response.content[0].text;
@@ -201,8 +223,23 @@ app.post("/sms/inbound", async (req, res) => {
 
     if (lead.status === "transferred") return;
 
-    if (["stop","unsubscribe","quit","cancel"].includes(body.toLowerCase())) {
+    // Opt-out detection — catches any clear "leave me alone" message
+    const lowerBody = body.toLowerCase();
+    const hardOptOut = [
+      "stop", "unsubscribe", "quit", "cancel", "remove me",
+      "don't text me", "dont text me", "stop texting", "stop texting me",
+      "no more texts", "no more messages", "leave me alone",
+      "don't contact me", "dont contact me", "not interested stop",
+      "please stop", "stop please", "take me off", "remove me from",
+      "do not contact", "do not text", "do not message",
+    ].some(phrase => lowerBody.includes(phrase));
+
+    if (hardOptOut) {
       await updateLead(lead.id, { status: "opted_out" });
+      // Send a polite confirmation so they know they're removed
+      await sendSMS(from, "Got it, I'll stop reaching out. If you ever change your mind feel free to text me anytime. Take care!");
+      await logMessage(lead.id, "outbound", "Got it, I'll stop reaching out. If you ever change your mind feel free to text me anytime. Take care!");
+      console.log(`🚫 Opted out: ${lead.name}`);
       return;
     }
 
