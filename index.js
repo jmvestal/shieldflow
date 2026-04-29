@@ -23,8 +23,65 @@ const S = {
   agentPhone: process.env.TWILIO_PHONE,
   officeHours: { days: ["Mon","Tue","Wed","Thu","Fri","Sat"], start: "08:00", end: "20:00" },
   saturdayHours: { start: "09:00", end: "18:00" },
-  afterHoursMsg: "Hey {name}, thanks for reaching out. I'm not available right now but I'll personally follow up with you first thing when I'm back. Feel free to reply with any questions!",
 };
+
+function getAfterHoursMsg(lead) {
+  const now         = new Date();
+  const central     = new Date(now.toLocaleString("en-US", { timeZone: "America/Chicago" }));
+  const hour        = central.getHours();
+  const day         = central.getDay(); // 0=Sun, 6=Sat
+  const name        = (lead.name || "").split(" ")[0] || "there";
+
+  // Figure out next open time
+  let nextOpen = "";
+  if (day === 5 && hour >= 20) {
+    // Friday evening — back Monday
+    nextOpen = "first thing Monday morning";
+  } else if (day === 6 && hour >= 18) {
+    // Saturday evening — back Monday
+    nextOpen = "first thing Monday morning";
+  } else if (day === 0) {
+    // Sunday — back Monday
+    nextOpen = "first thing Monday morning";
+  } else {
+    // Weekday evening or early morning
+    nextOpen = "tomorrow morning around 9";
+  }
+
+  // Pick greeting based on time of day
+  let greeting = "";
+  if (hour >= 20) {
+    greeting = `Have a great evening, ${name}.`;
+  } else if (hour >= 17) {
+    // Friday evening — wish them a great weekend
+    if (day === 5) {
+      greeting = `Hope you have a great weekend, ${name}!`;
+    } else {
+      greeting = `Hope your evening is going well, ${name}.`;
+    }
+  } else if (hour < 8) {
+    greeting = `Good morning, ${name}!`;
+  } else {
+    greeting = `Hey ${name},`;
+  }
+
+  // Friday specific variations
+  const isFridayEvening = day === 5 && hour >= 17;
+
+  // Rotate through a few variations
+  const variations = isFridayEvening ? [
+    `Hope you have a wonderful weekend, ${name}! I got your message and will follow up with you first thing Monday morning. Enjoy your weekend!`,
+    `Have a great weekend, ${name}! I saw your message and wanted you to know I'll take care of you first thing Monday. Talk soon!`,
+    `${name}, hope you have a great weekend! Got your message — I'll reach out Monday morning and we'll get everything sorted out for you.`,
+  ] : [
+    `${greeting} I just saw your message and wanted you to know I got it. I'll personally reach out ${nextOpen} — we'll get you taken care of.`,
+    `${greeting} Thanks for reaching out. I'm wrapping up for the day but I'll follow up with you ${nextOpen}. Looking forward to talking with you.`,
+    `${greeting} Got your message. I'm not available right now but I'll be in touch ${nextOpen}. Feel free to reply with any questions in the meantime.`,
+  ];
+
+  // Rotate based on hour so it's consistent per session
+  return variations[hour % variations.length];
+}
 
 const DAY = 86400;
 
@@ -99,12 +156,34 @@ async function getAIReply(lead, incomingMessage) {
   }));
   history.push({ role: "user", content: incomingMessage });
 
+  const centralTime = new Date().toLocaleString("en-US", { timeZone: "America/Chicago" });
+  const centralDate = new Date(centralTime);
+  const centralHour = centralDate.getHours();
+  const centralDay  = centralDate.getDay();
+  const isFriday    = centralDay === 5;
+  const isMidWeek   = centralDay === 3; // Wednesday
+  const isLateWeek  = centralDay === 4; // Thursday
+  const timeContext = centralHour >= 17 && isFriday
+    ? "It is Friday evening. If wrapping up the conversation, wish them a great weekend — something like 'have a great weekend' or 'enjoy your weekend' feels natural here."
+    : centralHour >= 18
+    ? "It is evening. If this is the last message of the day, close warmly — say something like 'have a good evening' or 'talk tomorrow morning' rather than just 'talk soon'."
+    : centralHour < 10
+    ? "It is morning. Open warmly with a good morning reference if natural."
+    : isMidWeek
+    ? "It is Wednesday — middle of the week. It feels natural to open with something like 'hope your week is going well so far' or 'hope you are having a good week' early in the conversation if it fits naturally. Don't force it."
+    : isLateWeek
+    ? "It is Thursday — towards the end of the week. It feels natural to say something like 'hope it has been a good week so far' or 'almost to the weekend' if it fits naturally in the conversation. Don't force it."
+    : isFriday
+    ? "It is Friday. You can reference the weekend if it fits naturally — something like 'hope you have a great weekend ahead' or 'almost the weekend'. Don't force it."
+    : "It is daytime.";
+
   const response = await anthropic.messages.create({
     model:      "claude-sonnet-4-5",
     max_tokens: 300,
     system: `You are John Michael, a friendly Farmers Insurance agent texting leads via SMS.
 Lead: ${(lead.name || "").split(" ")[0]}, interested in ${lead.product || "insurance"}, from ${lead.source || "online"}.
 ${lead.status === "after_hours" ? "IMPORTANT: This lead sent messages after hours. Review their previous messages carefully and respond to everything they asked in one natural reply." : ""}
+Time context: ${timeContext}
 
 Rules:
 - SMS only — 1 to 3 sentences MAX
@@ -310,7 +389,7 @@ app.post("/sms/inbound", async (req, res) => {
       }
 
       // First after-hours message — send the holding message
-      replyText = fill(S.afterHoursMsg, lead);
+      replyText = getAfterHoursMsg(lead);
       await updateLead(lead.id, { status: "after_hours" });
       const sid = await sendSMS(from, replyText);
       await logMessage(lead.id, "outbound", replyText, sid);
