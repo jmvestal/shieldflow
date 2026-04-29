@@ -392,18 +392,272 @@ cron.schedule("*/10 * * * *", async () => {
   }
 });
 
+// ── CROSS-SELL CADENCES ───────────────────────────────────────
+const CROSSSELL = {
+  auto_home: [
+    { step: 0, wait: 0,       ch: "sms", msg: "Hi {name}, this is John Michael, a Farmers Insurance agent. I wanted to reach out because you're currently insured with us on auto — do you currently have your home insured as well? Bundling both can save you 15-25% on both policies." },
+    { step: 1, wait: 86400*3, ch: "sms", msg: "Hey {name}, following up on bundling your home with your auto. Most of my clients save $200-$400 a year when they combine both. Would you be open to a quick quote on the home side?" },
+    { step: 2, wait: 86400*3, ch: "sms", msg: "Hi {name}, last check-in on this. If you ever want to explore bundling your home and auto together I'm just a text away. The savings are usually pretty significant." },
+    { step: 3, wait: 86400*7, ch: "sms", msg: "Hey {name}, no pressure at all. Just want you to know the offer stands whenever you're ready. Bundling home and auto is one of the best ways to save on both. Take care." },
+  ],
+  home_auto: [
+    { step: 0, wait: 0,       ch: "sms", msg: "Hi {name}, this is John Michael, a Farmers Insurance agent. You're currently with us on your home — do you have your vehicles insured with us as well? Bundling auto with your home usually saves people money on both." },
+    { step: 1, wait: 86400*3, ch: "sms", msg: "Hey {name}, following up on adding auto to your home policy. Most clients save $300-$500 a year bundling both together. Want me to run a quick quote?" },
+    { step: 2, wait: 86400*3, ch: "sms", msg: "Hi {name}, last check-in. If you're ever ready to look at bundling your auto with your home I'd love to help. Just reply anytime." },
+    { step: 3, wait: 86400*7, ch: "sms", msg: "Hey {name}, no worries if the timing isn't right. I'm here whenever you want to explore saving on both your home and auto. Take care." },
+  ],
+  bundle_umbrella: [
+    { step: 0, wait: 0,       ch: "sms", msg: "Hi {name}, this is John Michael with Farmers. Since you have both home and auto with us I wanted to mention a personal umbrella policy. It adds $1 million in extra liability coverage for about $15-25 a month. Would you want to know more?" },
+    { step: 1, wait: 86400*4, ch: "sms", msg: "Hey {name}, following up on the umbrella policy. It's one of those things most people don't think about until they need it. Want me to run a quick quote? Usually same-day bind." },
+    { step: 2, wait: 86400*7, ch: "sms", msg: "Hi {name}, last nudge on umbrella coverage. Whenever you're ready I can usually get it bound same day. Just reply and I'll take care of it." },
+  ],
+  auto_renters: [
+    { step: 0, wait: 0,       ch: "sms", msg: "Hi {name}, this is John Michael with Farmers. Quick question — do you rent where you live? If so, renters insurance is usually $12-18 a month and bundles with your auto for a discount on both." },
+    { step: 1, wait: 86400*3, ch: "sms", msg: "Hey {name}, following up on renters coverage. A lot of people don't realize their landlord's insurance doesn't cover their belongings. Want me to run a quick quote bundled with your auto?" },
+    { step: 2, wait: 86400*5, ch: "sms", msg: "Hi {name}, last check-in on renters insurance. It's one of the most affordable policies I offer and pairs really well with your auto. Just reply anytime if you want to take a look." },
+  ],
+};
+
+const WIN_BACK = [
+  { step: 0, wait: 0,       msg: "Hi {name}, this is John Michael with Farmers Insurance. It's been a while since we last worked together and I wanted to reach out — rates have shifted quite a bit lately and I think I might be able to beat what you're currently paying on your {product}. Would you be open to a quick comparison?" },
+  { step: 1, wait: 86400*3, msg: "Hey {name}, following up on my last message. I know switching feels like a hassle but I can usually have a quote ready in about 10 minutes. No commitment to look. Want me to run it?" },
+  { step: 2, wait: 86400*3, msg: "Hi {name}, I work with over 20 carriers so I can shop the whole market for you at once. A lot of my clients are surprised by what I find. Would you be open to just seeing the number?" },
+  { step: 3, wait: 86400*7, msg: "Hey {name}, last check-in from me. If your {product} renewal is coming up I'd love a shot at earning your business back. Just reply anytime and I'll get right on it." },
+  { step: 4, wait: 86400*14, msg: "Hi {name}, one final note. I'm always here if you want to compare rates on your {product}. Keep my number and reach out whenever the time is right. Hope all is well." },
+];
+
+const QUOTE_FOLLOWUP = [
+  { step: 0, wait: 0,        msg: "Hi {name}, just wanted to make sure you received the quote I sent over for your {product}. Let me know if you have any questions or if you'd like to adjust anything." },
+  { step: 1, wait: 3600*2,   msg: "Hey {name}, just checking in on your {product} quote. Happy to walk you through it or look at different coverage options if needed." },
+  { step: 2, wait: 86400*1,  msg: "Hi {name}, following up on your quote. If price is a concern I may have other options worth looking at. Just reply and I'll pull some alternatives." },
+  { step: 3, wait: 86400*3,  msg: "Hey {name}, still thinking it over? No rush at all. Is there anything I can answer to help make the decision easier?" },
+  { step: 4, wait: 86400*7,  msg: "Hi {name}, last follow-up on your {product} quote. If you've already found something that works, no worries at all. If not, I'm still here and happy to help." },
+];
+
+// ── CAMPAIGN HELPERS ──────────────────────────────────────────
+function fillCampaign(template, record) {
+  return (template || "")
+    .replace(/{name}/g,    (record.client_name || "").split(" ")[0] || "there")
+    .replace(/{product}/g, record.product || record.target_line || "insurance");
+}
+
+async function fireCampaignStep(table, record, step) {
+  const msg = fillCampaign(step.msg, record);
+  const sid = await sendSMS(record.client_phone, msg);
+  await supabase.from(table).update({
+    stage:      (record.stage || 0) + 1,
+    status:     "active",
+    updated_at: new Date().toISOString(),
+  }).eq("id", record.id);
+  console.log(`📤 [${table}] Step ${record.stage} → ${record.client_name}`);
+}
+
+function getCadenceKey(current, target) {
+  if (current === "auto"      && target === "home")     return "auto_home";
+  if (current === "home"      && target === "auto")     return "home_auto";
+  if (current === "auto,home" && target === "umbrella") return "bundle_umbrella";
+  if (current === "auto"      && target === "renters")  return "auto_renters";
+  return null;
+}
+
+// ── CROSS-SELL ROUTES ─────────────────────────────────────────
+
+// Add single client to cross-sell
+// POST /crosssell/add
+// { client_name, client_phone, current_lines, target_line }
+app.post("/crosssell/add", async (req, res) => {
+  try {
+    const { client_name, client_phone, client_email, current_lines, target_line } = req.body;
+    const cadenceKey = getCadenceKey(current_lines, target_line);
+    if (!cadenceKey) return res.status(400).json({ error: `No cadence for ${current_lines} → ${target_line}` });
+
+    const { data, error } = await supabase.from("cross_sell")
+      .insert({ client_name, client_phone, client_email, current_lines, target_line, status: "pending", stage: 0 })
+      .select().single();
+    if (error) throw error;
+
+    const step = CROSSSELL[cadenceKey][0];
+    await fireCampaignStep("cross_sell", data, step);
+    res.json({ status: "ok", id: data.id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Bulk upload book for cross-sell
+// POST /crosssell/bulk
+// { clients: [{ client_name, client_phone, current_lines, target_line }] }
+app.post("/crosssell/bulk", async (req, res) => {
+  try {
+    const { clients } = req.body;
+    let queued = 0, skipped = 0;
+    for (const c of clients || []) {
+      const key = getCadenceKey(c.current_lines, c.target_line);
+      if (!key) { skipped++; continue; }
+      await supabase.from("cross_sell").insert({ ...c, status: "pending", stage: 0 });
+      queued++;
+    }
+    res.json({ status: "ok", queued, skipped });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── WIN-BACK ROUTES ───────────────────────────────────────────
+
+// Add single lapsed client
+// POST /winback/add
+// { client_name, client_phone, product, renewal_date?, left_reason? }
+app.post("/winback/add", async (req, res) => {
+  try {
+    const { client_name, client_phone, client_email, product, renewal_date, left_reason } = req.body;
+    const { data, error } = await supabase.from("win_back")
+      .insert({ client_name, client_phone, client_email, product, renewal_date, left_reason, status: "pending", stage: 0 })
+      .select().single();
+    if (error) throw error;
+
+    await fireCampaignStep("win_back", data, WIN_BACK[0]);
+    res.json({ status: "ok", id: data.id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Bulk upload lapsed clients
+// POST /winback/bulk
+// { clients: [{ client_name, client_phone, product, renewal_date }] }
+app.post("/winback/bulk", async (req, res) => {
+  try {
+    const { clients } = req.body;
+    let queued = 0;
+    for (const c of clients || []) {
+      await supabase.from("win_back").insert({ ...c, status: "pending", stage: 0 });
+      queued++;
+    }
+    res.json({ status: "ok", queued });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Mark win-back as converted
+app.post("/winback/won/:id", async (req, res) => {
+  await supabase.from("win_back").update({ status: "converted" }).eq("id", req.params.id);
+  res.json({ status: "ok" });
+});
+
+// ── QUOTE FOLLOW-UP ROUTES ────────────────────────────────────
+
+// Trigger when you send a quote
+// POST /quote/sent
+// { client_name, client_phone, product, quoted_amount? }
+app.post("/quote/sent", async (req, res) => {
+  try {
+    const { client_name, client_phone, client_email, product, quoted_amount } = req.body;
+    const { data, error } = await supabase.from("quote_followup")
+      .insert({ client_name, client_phone, client_email, product, quoted_amount, status: "pending", stage: 0 })
+      .select().single();
+    if (error) throw error;
+
+    await fireCampaignStep("quote_followup", data, QUOTE_FOLLOWUP[0]);
+    res.json({ status: "ok", id: data.id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Mark quote as won — stops follow-up
+app.post("/quote/closed", async (req, res) => {
+  try {
+    const { client_phone } = req.body;
+    await supabase.from("quote_followup")
+      .update({ status: "won" })
+      .eq("client_phone", client_phone)
+      .eq("status", "active");
+    res.json({ status: "ok" });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Campaign stats
+app.get("/campaigns/stats", async (req, res) => {
+  const [cs, qf, wb] = await Promise.all([
+    supabase.from("cross_sell").select("status"),
+    supabase.from("quote_followup").select("status"),
+    supabase.from("win_back").select("status"),
+  ]);
+  const count = (arr, s) => (arr?.data || []).filter(r => r.status === s).length;
+  res.json({
+    cross_sell:     { active: count(cs, "active"), completed: count(cs, "completed") },
+    quote_followup: { active: count(qf, "active"), won: count(qf, "won"), completed: count(qf, "completed") },
+    win_back:       { active: count(wb, "active"), converted: count(wb, "converted"), completed: count(wb, "completed") },
+  });
+});
+
+// ── CAMPAIGN SCHEDULER ────────────────────────────────────────
+// Runs every 15 minutes during business hours
+cron.schedule("*/15 * * * *", async () => {
+  const hour = new Date().getHours();
+  if (hour < 9 || hour >= 17) return; // Campaign messages only during core hours
+
+  try {
+    const now = Date.now();
+
+    // Cross-sell — fire pending (5 per run to stagger)
+    const { data: csPending } = await supabase.from("cross_sell").select("*").eq("status","pending").limit(5);
+    for (const rec of csPending || []) {
+      const key = getCadenceKey(rec.current_lines, rec.target_line);
+      if (!key) continue;
+      await fireCampaignStep("cross_sell", rec, CROSSSELL[key][0]);
+    }
+
+    // Cross-sell — advance active
+    const { data: csActive } = await supabase.from("cross_sell").select("*").eq("status","active");
+    for (const rec of csActive || []) {
+      const key = getCadenceKey(rec.current_lines, rec.target_line);
+      if (!key) continue;
+      const cadence  = CROSSSELL[key];
+      const nextStep = cadence[rec.stage];
+      if (!nextStep) { await supabase.from("cross_sell").update({ status: "completed" }).eq("id", rec.id); continue; }
+      if (now >= new Date(rec.created_at).getTime() + nextStep.wait * 1000) {
+        await fireCampaignStep("cross_sell", rec, nextStep);
+      }
+    }
+
+    // Win-back — fire pending (5 per run)
+    const { data: wbPending } = await supabase.from("win_back").select("*").eq("status","pending").limit(5);
+    for (const rec of wbPending || []) await fireCampaignStep("win_back", rec, WIN_BACK[0]);
+
+    // Win-back — advance active
+    const { data: wbActive } = await supabase.from("win_back").select("*").eq("status","active");
+    for (const rec of wbActive || []) {
+      const nextStep = WIN_BACK[rec.stage];
+      if (!nextStep) { await supabase.from("win_back").update({ status: "completed" }).eq("id", rec.id); continue; }
+      if (now >= new Date(rec.created_at).getTime() + nextStep.wait * 1000) {
+        await fireCampaignStep("win_back", rec, nextStep);
+      }
+    }
+
+    // Quote follow-up — advance active
+    const { data: qfActive } = await supabase.from("quote_followup").select("*").eq("status","active");
+    for (const rec of qfActive || []) {
+      const nextStep = QUOTE_FOLLOWUP[rec.stage];
+      if (!nextStep) { await supabase.from("quote_followup").update({ status: "completed" }).eq("id", rec.id); continue; }
+      if (now >= new Date(rec.created_at).getTime() + nextStep.wait * 1000) {
+        await fireCampaignStep("quote_followup", rec, nextStep);
+      }
+    }
+
+  } catch (e) { console.error("❌ Campaign scheduler error:", e.message); }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`
   ┌─────────────────────────────────────────┐
   │   🛡  ShieldFlow AI — Vestal Agency     │
-  │   Farmers Insurance — Lubbock TX        │
+  │   Farmers Insurance                     │
   │   Port: ${PORT}                             │
   │   Office: ${isOfficeOpen() ? "OPEN ✅" : "CLOSED 🌙"}                  │
   │                                         │
-  │   POST /ingest       ← new leads       │
-  │   POST /sms/inbound  ← Twilio replies  │
-  │   GET  /health       ← status          │
+  │   POST /ingest          ← new leads    │
+  │   POST /sms/inbound     ← Twilio       │
+  │   POST /crosssell/add   ← cross-sell   │
+  │   POST /crosssell/bulk  ← bulk upload  │
+  │   POST /winback/add     ← win-back     │
+  │   POST /winback/bulk    ← bulk upload  │
+  │   POST /quote/sent      ← quote f/u   │
+  │   GET  /campaigns/stats ← overview     │
+  │   GET  /health          ← status       │
   └─────────────────────────────────────────┘
   `);
 });
