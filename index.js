@@ -543,15 +543,6 @@ cron.schedule("*/10 * * * *", async () => {
     console.error("❌ Scheduler error:", e.message);
   }
 });
-        await logMessage(lead.id, "outbound", msgText, sid);
-        await updateLead(lead.id, { sms_stage: nextStepIndex });
-        console.log(`📤 Cadence step ${nextStepIndex} → ${lead.name}`);
-      }
-    }
-  } catch (e) {
-    console.error("❌ Scheduler error:", e.message);
-  }
-});
 
 // ── CROSS-SELL CADENCES ───────────────────────────────────────
 const CROSSSELL = {
