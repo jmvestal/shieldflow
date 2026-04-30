@@ -407,42 +407,61 @@ app.post("/sms/inbound", async (req, res) => {
       }
       replyText = await getAIReply(lead, body);
 
-      // Detect if lead requested a specific callback time
-      const callbackMatch = body.match(/(\d{1,2}):?(\d{2})?\s*(am|pm)/i) ||
-                            body.match(/(\d{1,2})\s*(am|pm)/i) ||
-                            body.match(/(tomorrow|morning|afternoon|evening)/i);
+      // Detect callback request
+      const lowerMsg = body.toLowerCase();
+      const wantsCallback = (
+        lowerMsg.includes("text me at") ||
+        lowerMsg.includes("call me at") ||
+        lowerMsg.includes("reach out at") ||
+        lowerMsg.includes("contact me at") ||
+        lowerMsg.includes("text me in") ||
+        lowerMsg.includes("call me in") ||
+        lowerMsg.includes("text me tomorrow") ||
+        lowerMsg.includes("call me tomorrow") ||
+        lowerMsg.includes("follow up tomorrow") ||
+        lowerMsg.includes("try me tomorrow") ||
+        lowerMsg.includes("try again tomorrow")
+      );
 
-      if (callbackMatch && (body.toLowerCase().includes("tomorrow") ||
-          body.toLowerCase().includes("morning") ||
-          body.toLowerCase().includes("call") ||
-          body.toLowerCase().includes("talk") ||
-          body.toLowerCase().includes("am") ||
-          body.toLowerCase().includes("pm"))) {
-
-        // Schedule callback for next morning at 9am Central if they said tomorrow
-        // or try to parse specific time
+      if (wantsCallback) {
         const callbackTime = new Date();
-        callbackTime.setDate(callbackTime.getDate() + 1);
-        callbackTime.setHours(9, 0, 0, 0); // Default to 9am next day
 
-        // Try to parse specific hour if mentioned
-        const hourMatch = body.match(/(\d{1,2}):?(\d{2})?\s*(am|pm)/i) ||
-                          body.match(/(\d{1,2})\s*(am|pm)/i);
-        if (hourMatch) {
-          let hour = parseInt(hourMatch[1]);
-          const isPM = hourMatch[hourMatch.length - 1].toLowerCase() === "pm";
-          if (isPM && hour !== 12) hour += 12;
-          if (!isPM && hour === 12) hour = 0;
-          callbackTime.setHours(hour, 0, 0, 0);
+        // Check for "in X minutes"
+        const minuteMatch = lowerMsg.match(/in (\d+) min/);
+        if (minuteMatch) {
+          callbackTime.setMinutes(callbackTime.getMinutes() + parseInt(minuteMatch[1]));
+        }
+        // Check for specific time like "12:20" or "12:20pm" or "2pm"
+        else {
+          const timeMatch = body.match(/(\d{1,2}):(\d{2})\s*(am|pm)?/i) ||
+                            body.match(/(\d{1,2})\s*(am|pm)/i);
+          if (timeMatch) {
+            let hour = parseInt(timeMatch[1]);
+            const mins = timeMatch[2] && !isNaN(timeMatch[2]) ? parseInt(timeMatch[2]) : 0;
+            const meridiem = (timeMatch[3] || timeMatch[2] || "").toLowerCase();
+            if (meridiem === "pm" && hour !== 12) hour += 12;
+            if (meridiem === "am" && hour === 12) hour = 0;
+            // If no am/pm and hour < 8, assume pm (no one schedules before 8am)
+            if (!meridiem && hour < 8) hour += 12;
+            callbackTime.setHours(hour, mins, 0, 0);
+            // If that time has already passed today, schedule for tomorrow
+            if (callbackTime < new Date()) {
+              callbackTime.setDate(callbackTime.getDate() + 1);
+            }
+          } else {
+            // Just said "tomorrow" — default to 9am tomorrow
+            callbackTime.setDate(callbackTime.getDate() + 1);
+            callbackTime.setHours(9, 0, 0, 0);
+          }
         }
 
         await supabase.from("leads").update({
-          status: "callback_scheduled",
+          status:        "callback_scheduled",
           callback_time: callbackTime.toISOString(),
-          updated_at: new Date().toISOString(),
+          updated_at:    new Date().toISOString(),
         }).eq("id", lead.id);
 
-        console.log(`📅 Callback scheduled for ${lead.name} at ${callbackTime}`);
+        console.log(`📅 Callback scheduled for ${lead.name} at ${callbackTime.toLocaleString("en-US", { timeZone: "America/Chicago" })} Central`);
       } else if (isWarm(body) || isWarm(replyText)) {
         await updateLead(lead.id, { status: "warm" });
         console.log(`🔥 WARM LEAD: ${lead.name}`);
