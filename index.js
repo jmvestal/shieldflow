@@ -895,7 +895,5 @@ app.listen(PORT, () => {
   └─────────────────────────────────────────┘
   `);
 
-  // Reload any pending callbacks from database on startup (restart recovery)
-  // Only schedules if not already in activeCallbacks map
-  setTimeout(reloadPendingCallbacks, 5000); // Small delay to let server fully initialize
+  console.log("✅ ShieldFlow AI server started successfully");
 });
