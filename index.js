@@ -430,10 +430,11 @@ app.post("/sms/inbound", async (req, res) => {
       if (wantsCallback) {
         const callbackTime = new Date();
 
-        // Check for "in X minutes"
-        const minuteMatch = lowerMsg.match(/in (\d+) min/);
+        // Check for "in X minutes/mins/min"
+        const minuteMatch = lowerMsg.match(/in (\d+)\s*min/);
         if (minuteMatch) {
           callbackTime.setMinutes(callbackTime.getMinutes() + parseInt(minuteMatch[1]));
+          console.log(`⏰ Scheduling callback in ${minuteMatch[1]} minutes`);
         }
         // Check for specific time like "12:20" or "12:20pm" or "2pm"
         else {
@@ -453,9 +454,10 @@ app.post("/sms/inbound", async (req, res) => {
               callbackTime.setDate(callbackTime.getDate() + 1);
             }
           } else {
-            // Just said "tomorrow" — default to 9am tomorrow
+            // Just said "tomorrow" or no time detected — default to 9am tomorrow
             callbackTime.setDate(callbackTime.getDate() + 1);
             callbackTime.setHours(9, 0, 0, 0);
+            console.log(`⏰ No specific time detected — scheduling for tomorrow 9am`);
           }
         }
 
