@@ -465,6 +465,8 @@ app.post("/sms/inbound", async (req, res) => {
           updated_at:    new Date().toISOString(),
         }).eq("id", lead.id);
 
+        // Schedule exact-time callback using setTimeout
+        scheduleCallback(lead, callbackTime);
         console.log(`📅 Callback scheduled for ${lead.name} at ${callbackTime.toLocaleString("en-US", { timeZone: "America/Chicago" })} Central`);
       } else if (isWarm(body) || isWarm(replyText)) {
         await updateLead(lead.id, { status: "warm" });
@@ -553,21 +555,18 @@ cron.schedule("*/10 * * * *", async () => {
       }
     }
 
-    // Check for scheduled callbacks — runs independently of cadence leads
-    const { data: callbacks } = await supabase.from("leads")
+    // Check for any callbacks that may have been missed (safety net for restarts)
+    const { data: missedCallbacks } = await supabase.from("leads")
       .select("*")
       .eq("status", "callback_scheduled")
-      .lte("callback_time", new Date().toISOString());
+      .lte("callback_time", new Date().toISOString())
+      .not("callback_time", "is", null);
 
-    for (const lead of callbacks || []) {
-      const centralNow = new Date().toLocaleString("en-US", { timeZone: "America/Chicago" });
-      const hour = new Date(centralNow).getHours();
-      const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
-      const msg = `${greeting} ${(lead.name || "").split(" ")[0]}, this is John Michael following up as promised. Is now still a good time to chat about your ${lead.product || "insurance"} quote?`;
-      await sendSMS(lead.phone, msg);
-      await logMessage(lead.id, "outbound", msg);
-      await updateLead(lead.id, { status: "texting", callback_time: null });
-      console.log(`📞 Callback fired for ${lead.name}`);
+    for (const lead of missedCallbacks || []) {
+      if (!activeCallbacks.has(lead.id)) {
+        console.log(`🔁 Picking up missed callback for ${lead.name}`);
+        await fireCallback(lead);
+      }
     }
 
   } catch (e) {
@@ -575,7 +574,61 @@ cron.schedule("*/10 * * * *", async () => {
   }
 });
 
-// ── CROSS-SELL CADENCES ───────────────────────────────────────
+// ── CALLBACK SCHEDULER ───────────────────────────────────────
+// Uses setTimeout for precise timing + database for restart recovery
+const activeCallbacks = new Map(); // leadId → timeoutId
+
+async function fireCallback(lead) {
+  const centralNow  = new Date().toLocaleString("en-US", { timeZone: "America/Chicago" });
+  const hour        = new Date(centralNow).getHours();
+  const greeting    = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const msg         = `${greeting} ${(lead.name || "").split(" ")[0]}, this is John Michael following up as promised. Is now still a good time to chat about your ${lead.product || "insurance"} quote?`;
+  await sendSMS(lead.phone, msg);
+  await logMessage(lead.id, "outbound", msg);
+  await updateLead(lead.id, { status: "texting", callback_time: null });
+  activeCallbacks.delete(lead.id);
+  console.log(`📞 Callback fired for ${lead.name}`);
+}
+
+function scheduleCallback(lead, callbackTime) {
+  // Cancel any existing callback for this lead
+  if (activeCallbacks.has(lead.id)) {
+    clearTimeout(activeCallbacks.get(lead.id));
+    activeCallbacks.delete(lead.id);
+  }
+
+  const delay = callbackTime.getTime() - Date.now();
+
+  if (delay <= 0) {
+    // Time already passed — fire immediately
+    fireCallback(lead);
+    return;
+  }
+
+  const timeoutId = setTimeout(() => fireCallback(lead), delay);
+  activeCallbacks.set(lead.id, timeoutId);
+  console.log(`⏰ Callback timer set for ${lead.name} — fires in ${Math.round(delay/1000/60)} minutes`);
+}
+
+// On server startup — reload any pending callbacks from database
+async function reloadPendingCallbacks() {
+  try {
+    const { data: pending } = await supabase.from("leads")
+      .select("*")
+      .eq("status", "callback_scheduled")
+      .not("callback_time", "is", null);
+
+    if (!pending?.length) return;
+    console.log(`🔄 Reloading ${pending.length} pending callback(s) from database...`);
+    for (const lead of pending) {
+      scheduleCallback(lead, new Date(lead.callback_time));
+    }
+  } catch (e) {
+    console.error("❌ Error reloading callbacks:", e.message);
+  }
+}
+
+
 const CROSSSELL = {
   auto_home: [
     { step: 0, wait: 0,       ch: "sms", msg: "Hi {name}, this is John Michael, a Farmers Insurance agent. I wanted to reach out because you're currently insured with us on auto — do you currently have your home insured as well? Bundling both can save you 15-25% on both policies." },
@@ -851,4 +904,7 @@ app.listen(PORT, () => {
   │   GET  /health          ← status       │
   └─────────────────────────────────────────┘
   `);
+
+  // Reload any pending callbacks from database on startup
+  reloadPendingCallbacks();
 });
