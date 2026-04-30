@@ -479,12 +479,27 @@ app.get("/leads", async (req, res) => {
 });
 
 // Cadence scheduler — runs every 10 minutes
+// OUTBOUND RULES: Mon-Fri 8am-6pm only. No weekend outbound.
+// AI still replies to inbound messages any time office is open (8am-8pm Mon-Sat)
 cron.schedule("*/10 * * * *", async () => {
   try {
-    // Use Central time for hour check
+    // Use Central time for all time checks
     const centralTime = new Date().toLocaleString("en-US", { timeZone: "America/Chicago" });
-    const centralHour = new Date(centralTime).getHours();
-    if (centralHour < 8 || centralHour >= 20) return; // No texts before 8am or after 8pm Central
+    const centralDate = new Date(centralTime);
+    const centralHour = centralDate.getHours();
+    const centralDay  = centralDate.getDay(); // 0=Sun, 6=Sat
+
+    // No outbound cadence texts on weekends
+    if (centralDay === 0 || centralDay === 6) {
+      console.log("⏸ Weekend — no outbound cadence texts today");
+      return;
+    }
+
+    // No outbound cadence texts before 8am or after 6pm on weekdays
+    if (centralHour < 8 || centralHour >= 18) {
+      console.log("⏸ Outside outbound hours — no cadence texts right now");
+      return;
+    }
 
     const { data: leads } = await supabase.from("leads").select("*")
       .in("status", ["queued","texting"])
@@ -730,12 +745,20 @@ app.get("/campaigns/stats", async (req, res) => {
 });
 
 // ── CAMPAIGN SCHEDULER ────────────────────────────────────────
-// Runs every 15 minutes during business hours
+// OUTBOUND RULES: Mon-Fri 8am-6pm Central only. No weekends.
 cron.schedule("*/15 * * * *", async () => {
-  const hour = new Date().getHours();
-  if (hour < 9 || hour >= 17) return; // Campaign messages only during core hours
-
   try {
+    const centralTime = new Date().toLocaleString("en-US", { timeZone: "America/Chicago" });
+    const centralDate = new Date(centralTime);
+    const centralHour = centralDate.getHours();
+    const centralDay  = centralDate.getDay();
+
+    // No outbound on weekends
+    if (centralDay === 0 || centralDay === 6) return;
+
+    // No outbound before 8am or after 6pm Central
+    if (centralHour < 8 || centralHour >= 18) return;
+
     const now = Date.now();
 
     // Cross-sell — fire pending (5 per run to stagger)
