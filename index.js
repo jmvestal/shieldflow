@@ -466,7 +466,6 @@ app.post("/sms/inbound", async (req, res) => {
           updated_at:    new Date().toISOString(),
         }).eq("id", lead.id);
 
-        scheduleCallback(lead, callbackTime);
         console.log(`📅 Callback scheduled for ${lead.name} at ${callbackTime.toLocaleString("en-US", { timeZone: "America/Chicago" })} Central`);
 
       } else if (isWarm(body) || isWarm(replyText)) {
@@ -563,60 +562,30 @@ cron.schedule("*/10 * * * *", async () => {
 });
 
 // ── CALLBACK SCHEDULER ───────────────────────────────────────
-// Uses setTimeout for precise timing + database for restart recovery
-const activeCallbacks = new Map(); // leadId → timeoutId
-
-async function fireCallback(lead) {
-  const centralNow  = new Date().toLocaleString("en-US", { timeZone: "America/Chicago" });
-  const hour        = new Date(centralNow).getHours();
-  const greeting    = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
-  const msg         = `${greeting} ${(lead.name || "").split(" ")[0]}, this is John Michael following up as promised. Is now still a good time to chat about your ${lead.product || "insurance"} quote?`;
-  await sendSMS(lead.phone, msg);
-  await logMessage(lead.id, "outbound", msg);
-  await updateLead(lead.id, { status: "texting", callback_time: null });
-  activeCallbacks.delete(lead.id);
-  console.log(`📞 Callback fired for ${lead.name}`);
-}
-
-function scheduleCallback(lead, callbackTime) {
-  // Cancel any existing callback for this lead
-  if (activeCallbacks.has(lead.id)) {
-    clearTimeout(activeCallbacks.get(lead.id));
-    activeCallbacks.delete(lead.id);
-  }
-
-  const delay = callbackTime.getTime() - Date.now();
-
-  if (delay <= 0) {
-    // Time already passed — fire immediately
-    fireCallback(lead);
-    return;
-  }
-
-  const timeoutId = setTimeout(() => fireCallback(lead), delay);
-  activeCallbacks.set(lead.id, timeoutId);
-  console.log(`⏰ Callback timer set for ${lead.name} — fires in ${Math.round(delay/1000/60)} minutes`);
-}
-
-// On server startup — reload any pending callbacks from database
-async function reloadPendingCallbacks() {
+// Runs every minute — checks for due callbacks from database
+// More reliable than setTimeout on free hosting (survives restarts/sleep)
+cron.schedule("* * * * *", async () => {
   try {
-    const { data: pending } = await supabase.from("leads")
+    const { data: callbacks } = await supabase.from("leads")
       .select("*")
       .eq("status", "callback_scheduled")
+      .lte("callback_time", new Date().toISOString())
       .not("callback_time", "is", null);
 
-    if (!pending?.length) return;
-    console.log(`🔄 Reloading ${pending.length} pending callback(s) from database...`);
-    for (const lead of pending) {
-      // Skip if already scheduled in memory
-      if (activeCallbacks.has(lead.id)) continue;
-      scheduleCallback(lead, new Date(lead.callback_time));
+    for (const lead of callbacks || []) {
+      const centralNow = new Date().toLocaleString("en-US", { timeZone: "America/Chicago" });
+      const hour       = new Date(centralNow).getHours();
+      const greeting   = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+      const msg        = `${greeting} ${(lead.name || "").split(" ")[0]}, this is John Michael following up as promised. Is now still a good time to chat about your ${lead.product || "insurance"} quote?`;
+      await sendSMS(lead.phone, msg);
+      await logMessage(lead.id, "outbound", msg);
+      await updateLead(lead.id, { status: "texting", callback_time: null });
+      console.log(`📞 Callback fired for ${lead.name}`);
     }
   } catch (e) {
-    console.error("❌ Error reloading callbacks:", e.message);
+    console.error("❌ Callback scheduler error:", e.message);
   }
-}
+});
 
 
 const CROSSSELL = {
