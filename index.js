@@ -534,10 +534,9 @@ cron.schedule("*/10 * * * *", async () => {
       .in("status", ["queued","texting"])
       .lt("sms_stage", CADENCE.length - 1);
 
-    if (!leads?.length) return;
     const now = Date.now();
 
-    for (const lead of leads) {
+    for (const lead of leads || []) {
       const nextStepIndex = lead.sms_stage + 1;
       const nextStep      = CADENCE[nextStepIndex];
       if (!nextStep) continue;
@@ -554,14 +553,17 @@ cron.schedule("*/10 * * * *", async () => {
       }
     }
 
-    // Check for scheduled callbacks
+    // Check for scheduled callbacks — runs independently of cadence leads
     const { data: callbacks } = await supabase.from("leads")
       .select("*")
       .eq("status", "callback_scheduled")
       .lte("callback_time", new Date().toISOString());
 
     for (const lead of callbacks || []) {
-      const msg = `Good morning ${(lead.name || "").split(" ")[0]}, this is John Michael following up as promised. Is now still a good time to chat about your ${lead.product || "insurance"} quote?`;
+      const centralNow = new Date().toLocaleString("en-US", { timeZone: "America/Chicago" });
+      const hour = new Date(centralNow).getHours();
+      const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+      const msg = `${greeting} ${(lead.name || "").split(" ")[0]}, this is John Michael following up as promised. Is now still a good time to chat about your ${lead.product || "insurance"} quote?`;
       await sendSMS(lead.phone, msg);
       await logMessage(lead.id, "outbound", msg);
       await updateLead(lead.id, { status: "texting", callback_time: null });
