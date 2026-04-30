@@ -169,13 +169,17 @@ async function getAIReply(lead, incomingMessage) {
     ? "REQUIRED: It is evening. You MUST end every message with a warm evening closing. For example: 'Have a great night!' or 'Enjoy your evening!' or 'Talk tomorrow morning — have a good night!' Never just end with 'talk soon' or 'see you then' without adding a warm evening closing."
     : centralHour >= 17
     ? "REQUIRED: It is late afternoon heading into evening. End your message with something warm like 'Have a good evening!' or 'Hope your evening goes well!'"
+    : centralHour >= 12
+    ? "IMPORTANT: It is the afternoon — do NOT say 'good morning', 'rest of your morning', or reference morning in any way. It is past noon. If closing naturally say 'have a great afternoon' or just close without a time reference."
+    : centralHour >= 10
+    ? "It is late morning, around 10-11am. You can reference morning if natural but keep it brief."
     : centralHour < 10
-    ? "It is morning. If natural, open with a good morning reference."
-    : isMidWeek
-    ? "It is Wednesday. If natural, mention something like 'hope your week is going well so far.'"
-    : isLateWeek
+    ? "It is early morning before 10am. If natural, open with a good morning reference."
+    : isMidWeek && centralHour < 17
+    ? "It is Wednesday. If natural and early in the conversation, mention something like 'hope your week is going well so far.'"
+    : isLateWeek && centralHour < 17
     ? "It is Thursday. If natural, mention something like 'hope it has been a good week so far.'"
-    : isFriday
+    : isFriday && centralHour < 17
     ? "It is Friday daytime. If natural, reference the upcoming weekend."
     : "It is daytime.";
 
