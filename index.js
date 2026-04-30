@@ -557,19 +557,8 @@ cron.schedule("*/10 * * * *", async () => {
       }
     }
 
-    // Check for any callbacks that may have been missed (safety net for restarts)
-    const { data: missedCallbacks } = await supabase.from("leads")
-      .select("*")
-      .eq("status", "callback_scheduled")
-      .lte("callback_time", new Date().toISOString())
-      .not("callback_time", "is", null);
-
-    for (const lead of missedCallbacks || []) {
-      if (!activeCallbacks.has(lead.id)) {
-        console.log(`🔁 Picking up missed callback for ${lead.name}`);
-        await fireCallback(lead);
-      }
-    }
+    // Cadence scheduler only handles lead nurture steps
+    // Callbacks are handled exclusively by setTimeout in scheduleCallback()
 
   } catch (e) {
     console.error("❌ Scheduler error:", e.message);
@@ -623,6 +612,8 @@ async function reloadPendingCallbacks() {
     if (!pending?.length) return;
     console.log(`🔄 Reloading ${pending.length} pending callback(s) from database...`);
     for (const lead of pending) {
+      // Skip if already scheduled in memory
+      if (activeCallbacks.has(lead.id)) continue;
       scheduleCallback(lead, new Date(lead.callback_time));
     }
   } catch (e) {
@@ -907,6 +898,7 @@ app.listen(PORT, () => {
   └─────────────────────────────────────────┘
   `);
 
-  // Reload any pending callbacks from database on startup
-  reloadPendingCallbacks();
+  // Reload any pending callbacks from database on startup (restart recovery)
+  // Only schedules if not already in activeCallbacks map
+  setTimeout(reloadPendingCallbacks, 5000); // Small delay to let server fully initialize
 });
