@@ -411,7 +411,7 @@ app.post("/sms/inbound", async (req, res) => {
       }
       replyText = await getAIReply(lead, body);
 
-      // Detect callback request
+      // Detect callback request BEFORE sending reply
       const lowerMsg = body.toLowerCase();
       const wantsCallback = (
         lowerMsg.includes("text me at") ||
@@ -427,6 +427,10 @@ app.post("/sms/inbound", async (req, res) => {
         lowerMsg.includes("try again tomorrow")
       );
 
+      // Send Claude's reply first
+      const sid = await sendSMS(from, replyText);
+      await logMessage(lead.id, "outbound", replyText, sid);
+
       if (wantsCallback) {
         const callbackTime = new Date();
 
@@ -435,9 +439,7 @@ app.post("/sms/inbound", async (req, res) => {
         if (minuteMatch) {
           callbackTime.setMinutes(callbackTime.getMinutes() + parseInt(minuteMatch[1]));
           console.log(`⏰ Scheduling callback in ${minuteMatch[1]} minutes`);
-        }
-        // Check for specific time like "12:20" or "12:20pm" or "2pm"
-        else {
+        } else {
           const timeMatch = body.match(/(\d{1,2}):(\d{2})\s*(am|pm)?/i) ||
                             body.match(/(\d{1,2})\s*(am|pm)/i);
           if (timeMatch) {
@@ -446,15 +448,12 @@ app.post("/sms/inbound", async (req, res) => {
             const meridiem = (timeMatch[3] || timeMatch[2] || "").toLowerCase();
             if (meridiem === "pm" && hour !== 12) hour += 12;
             if (meridiem === "am" && hour === 12) hour = 0;
-            // If no am/pm and hour < 8, assume pm (no one schedules before 8am)
             if (!meridiem && hour < 8) hour += 12;
             callbackTime.setHours(hour, mins, 0, 0);
-            // If that time has already passed today, schedule for tomorrow
             if (callbackTime < new Date()) {
               callbackTime.setDate(callbackTime.getDate() + 1);
             }
           } else {
-            // Just said "tomorrow" or no time detected — default to 9am tomorrow
             callbackTime.setDate(callbackTime.getDate() + 1);
             callbackTime.setHours(9, 0, 0, 0);
             console.log(`⏰ No specific time detected — scheduling for tomorrow 9am`);
@@ -467,17 +466,15 @@ app.post("/sms/inbound", async (req, res) => {
           updated_at:    new Date().toISOString(),
         }).eq("id", lead.id);
 
-        // Schedule exact-time callback using setTimeout
         scheduleCallback(lead, callbackTime);
         console.log(`📅 Callback scheduled for ${lead.name} at ${callbackTime.toLocaleString("en-US", { timeZone: "America/Chicago" })} Central`);
+
       } else if (isWarm(body) || isWarm(replyText)) {
         await updateLead(lead.id, { status: "warm" });
         console.log(`🔥 WARM LEAD: ${lead.name}`);
       } else {
         await updateLead(lead.id, { status: "texting" });
       }
-      const sid = await sendSMS(from, replyText);
-      await logMessage(lead.id, "outbound", replyText, sid);
     }
 
   } catch (e) {
