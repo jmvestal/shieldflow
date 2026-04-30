@@ -218,10 +218,7 @@ WHEN THEY SAY THEY ONLY WANT ONE LINE — don't push hard, but plant the seed:
 - "Got it, I'll focus on that for you. I do want to mention bundling when the time is right because the savings are usually pretty significant, but for now let's get this quote done first."
 
 GOAL: Quote at least 2 lines per household when possible, then get them on the phone.
-- When ready for quote: Rotate through variations like:
-  - "Great, let me get you a quote — can I call you now or is there a better time?"
-  - "Sounds good. What's the best number to reach you and when works for a quick call?"
-  - "Perfect. I can have numbers for you pretty quickly — when can I give you a call?"
+- When someone asks you to follow up at a specific time or says "text me tomorrow at X" or "call me at X", confirm the time clearly and warmly. Example: "Perfect, I'll reach out tomorrow at 9:30. Have a good night!" Make sure to always confirm the specific time they requested so they know you got it.
 
 OBJECTION HANDLING — never give up after one objection. Vary your responses every time.
 
@@ -403,7 +400,44 @@ app.post("/sms/inbound", async (req, res) => {
         console.log(`☀️ Office opened — catching up on after-hours messages for ${lead.name}`);
       }
       replyText = await getAIReply(lead, body);
-      if (isWarm(body) || isWarm(replyText)) {
+
+      // Detect if lead requested a specific callback time
+      const callbackMatch = body.match(/(\d{1,2}):?(\d{2})?\s*(am|pm)/i) ||
+                            body.match(/(\d{1,2})\s*(am|pm)/i) ||
+                            body.match(/(tomorrow|morning|afternoon|evening)/i);
+
+      if (callbackMatch && (body.toLowerCase().includes("tomorrow") ||
+          body.toLowerCase().includes("morning") ||
+          body.toLowerCase().includes("call") ||
+          body.toLowerCase().includes("talk") ||
+          body.toLowerCase().includes("am") ||
+          body.toLowerCase().includes("pm"))) {
+
+        // Schedule callback for next morning at 9am Central if they said tomorrow
+        // or try to parse specific time
+        const callbackTime = new Date();
+        callbackTime.setDate(callbackTime.getDate() + 1);
+        callbackTime.setHours(9, 0, 0, 0); // Default to 9am next day
+
+        // Try to parse specific hour if mentioned
+        const hourMatch = body.match(/(\d{1,2}):?(\d{2})?\s*(am|pm)/i) ||
+                          body.match(/(\d{1,2})\s*(am|pm)/i);
+        if (hourMatch) {
+          let hour = parseInt(hourMatch[1]);
+          const isPM = hourMatch[hourMatch.length - 1].toLowerCase() === "pm";
+          if (isPM && hour !== 12) hour += 12;
+          if (!isPM && hour === 12) hour = 0;
+          callbackTime.setHours(hour, 0, 0, 0);
+        }
+
+        await supabase.from("leads").update({
+          status: "callback_scheduled",
+          callback_time: callbackTime.toISOString(),
+          updated_at: new Date().toISOString(),
+        }).eq("id", lead.id);
+
+        console.log(`📅 Callback scheduled for ${lead.name} at ${callbackTime}`);
+      } else if (isWarm(body) || isWarm(replyText)) {
         await updateLead(lead.id, { status: "warm" });
         console.log(`🔥 WARM LEAD: ${lead.name}`);
       } else {
@@ -447,8 +481,10 @@ app.get("/leads", async (req, res) => {
 // Cadence scheduler — runs every 10 minutes
 cron.schedule("*/10 * * * *", async () => {
   try {
-    const hour = new Date().getHours();
-    if (hour < 8 || hour >= 20) return;
+    // Use Central time for hour check
+    const centralTime = new Date().toLocaleString("en-US", { timeZone: "America/Chicago" });
+    const centralHour = new Date(centralTime).getHours();
+    if (centralHour < 8 || centralHour >= 20) return; // No texts before 8am or after 8pm Central
 
     const { data: leads } = await supabase.from("leads").select("*")
       .in("status", ["queued","texting"])
@@ -468,6 +504,30 @@ cron.schedule("*/10 * * * *", async () => {
       if (now >= sendAfter) {
         const msgText = fill(nextStep.message, lead);
         const sid     = await sendSMS(lead.phone, msgText);
+        await logMessage(lead.id, "outbound", msgText, sid);
+        await updateLead(lead.id, { sms_stage: nextStepIndex });
+        console.log(`📤 Cadence step ${nextStepIndex} → ${lead.name}`);
+      }
+    }
+
+    // Check for scheduled callbacks
+    const { data: callbacks } = await supabase.from("leads")
+      .select("*")
+      .eq("status", "callback_scheduled")
+      .lte("callback_time", new Date().toISOString());
+
+    for (const lead of callbacks || []) {
+      const msg = `Good morning ${(lead.name || "").split(" ")[0]}, this is John Michael following up as promised. Is now still a good time to chat about your ${lead.product || "insurance"} quote?`;
+      await sendSMS(lead.phone, msg);
+      await logMessage(lead.id, "outbound", msg);
+      await updateLead(lead.id, { status: "texting", callback_time: null });
+      console.log(`📞 Callback fired for ${lead.name}`);
+    }
+
+  } catch (e) {
+    console.error("❌ Scheduler error:", e.message);
+  }
+});
         await logMessage(lead.id, "outbound", msgText, sid);
         await updateLead(lead.id, { sms_stage: nextStepIndex });
         console.log(`📤 Cadence step ${nextStepIndex} → ${lead.name}`);
