@@ -218,7 +218,11 @@ WHEN THEY SAY THEY ONLY WANT ONE LINE — don't push hard, but plant the seed:
 - "Got it, I'll focus on that for you. I do want to mention bundling when the time is right because the savings are usually pretty significant, but for now let's get this quote done first."
 
 GOAL: Quote at least 2 lines per household when possible, then get them on the phone.
-- When someone asks you to follow up at a specific time or says "text me tomorrow at X" or "call me at X", confirm the time clearly and warmly. Example: "Perfect, I'll reach out tomorrow at 9:30. Have a good night!" Make sure to always confirm the specific time they requested so they know you got it.
+- When someone asks you to follow up at a specific time or says "text me tomorrow at X" or "call me at X", confirm the exact time clearly and warmly. ALWAYS repeat the specific time back to them so they know you got it. Example: "Sounds good, I'll reach out at 11:30 tomorrow morning. Have a good evening!" or "Perfect, I'll follow up at 11:30. Talk to you then — have a good night!" Never say just "talk to you then" without specifying the time.
+- When ready for quote: Rotate through variations like:
+  - "Great, let me get you a quote — can I call you now or is there a better time?"
+  - "Sounds good. What's the best number to reach you and when works for a quick call?"
+  - "Perfect. I can have numbers for you pretty quickly — when can I give you a call?"
 
 OBJECTION HANDLING — never give up after one objection. Vary your responses every time.
 
@@ -343,22 +347,24 @@ app.post("/sms/inbound", async (req, res) => {
 
     if (lead.status === "transferred") return;
 
-    // Opt-out detection — catches any clear "leave me alone" message
-    const lowerBody = body.toLowerCase();
+    // Opt-out detection — only triggers on clear explicit opt-out phrases
+    // Does NOT trigger on things like "text me at 11:30" or "can you text me tomorrow"
+    const lowerBody = body.toLowerCase().trim();
     const hardOptOut = [
-      "stop", "unsubscribe", "quit", "cancel", "remove me",
-      "don't text me", "dont text me", "stop texting", "stop texting me",
-      "no more texts", "no more messages", "leave me alone",
-      "don't contact me", "dont contact me", "not interested stop",
-      "please stop", "stop please", "take me off", "remove me from",
-      "do not contact", "do not text", "do not message",
-    ].some(phrase => lowerBody.includes(phrase));
+      "stop", "unsubscribe", "quit", "cancel",
+      "stop texting", "stop texting me",
+      "no more texts", "no more messages",
+      "leave me alone", "remove me",
+      "do not contact", "do not text",
+      "don't contact me", "dont contact me",
+      "please stop texting", "stop please",
+      "take me off your list",
+    ].some(phrase => lowerBody === phrase || lowerBody.startsWith(phrase + " ") || lowerBody.endsWith(" " + phrase));
 
     if (hardOptOut) {
       await updateLead(lead.id, { status: "opted_out" });
-      // Send a polite confirmation so they know they're removed
-      await sendSMS(from, "Got it, I'll stop reaching out. If you ever change your mind feel free to text me anytime. Take care!");
-      await logMessage(lead.id, "outbound", "Got it, I'll stop reaching out. If you ever change your mind feel free to text me anytime. Take care!");
+      await sendSMS(from, "No problem at all. I'll leave you alone and wish you all the best. If you ever need anything down the road, don't hesitate to reach out.");
+      await logMessage(lead.id, "outbound", "No problem at all. I'll leave you alone and wish you all the best. If you ever need anything down the road, don't hesitate to reach out.");
       console.log(`🚫 Opted out: ${lead.name}`);
       return;
     }
