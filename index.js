@@ -188,16 +188,18 @@ async function getAIReply(lead, incomingMessage) {
   const centralTime = new Date().toLocaleString("en-US", { timeZone: "America/Chicago" });
   const centralDate = new Date(centralTime);
   const centralHour = centralDate.getHours();
+  const centralMins = centralDate.getMinutes();
   const centralDay  = centralDate.getDay();
   const isFriday    = centralDay === 5;
   const isMidWeek   = centralDay === 3;
   const isLateWeek  = centralDay === 4;
-  const timeContext = centralHour >= 17 && isFriday
+  const isApproachingEvening = centralHour >= 17 || (centralHour === 16 && centralMins >= 30);
+  const timeContext = isApproachingEvening && isFriday
     ? "REQUIRED: It is Friday evening. You MUST end your message with a warm weekend send-off. For example: 'Have a great weekend!' or 'Enjoy your weekend!' This is required on every message right now."
     : centralHour >= 18
     ? "REQUIRED: It is evening. You MUST end every message with a warm evening closing. For example: 'Have a great night!' or 'Enjoy your evening!' or 'Talk tomorrow morning — have a good night!' Never just end with 'talk soon' or 'see you then' without adding a warm evening closing."
-    : centralHour >= 17
-    ? "REQUIRED: It is late afternoon heading into evening. End your message with something warm like 'Have a good evening!' or 'Hope your evening goes well!'"
+    : isApproachingEvening
+    ? "REQUIRED: It is late afternoon and the end of the business day. This is likely the last message of the day. You MUST end your message with a warm evening closing like 'Have a good evening!' or 'Hope your evening goes well!' or 'Enjoy your evening!'"
     : centralHour >= 12
     ? "IMPORTANT: It is the afternoon — do NOT say 'good morning', 'rest of your morning', or reference morning in any way. It is past noon. If closing naturally say 'have a great afternoon' or just close without a time reference."
     : centralHour >= 10
