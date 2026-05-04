@@ -11,6 +11,33 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Returns the ms offset between UTC and America/Chicago right now (handles DST)
+function centralOffsetMs() {
+  const now     = new Date();
+  const central = new Date(now.toLocaleString("en-US", { timeZone: "America/Chicago" }));
+  return now.getTime() - central.getTime();
+}
+
+// API key auth for non-Twilio endpoints
+function requireApiKey(req, res, next) {
+  if (req.headers["x-api-key"] !== process.env.API_KEY) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  next();
+}
+
+// Twilio webhook signature validation
+function validateTwilioSignature(req, res, next) {
+  const authToken  = process.env.TWILIO_AUTH_TOKEN;
+  const signature  = req.headers["x-twilio-signature"] || "";
+  const url        = `${req.protocol}://${req.get("host")}${req.originalUrl}`;
+  if (!twilio.validateRequest(authToken, signature, url, req.body)) {
+    console.warn("⚠️  Invalid Twilio signature rejected");
+    return res.status(403).send("Forbidden");
+  }
+  next();
+}
+
 // Clients
 const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 const anthropic    = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -184,7 +211,7 @@ async function getAIReply(lead, incomingMessage) {
     : "It is daytime.";
 
   const response = await anthropic.messages.create({
-    model:      "claude-sonnet-4-5",
+    model:      "claude-sonnet-4-6",
     max_tokens: 300,
     system: `You are John Michael, a friendly Farmers Insurance agent texting leads via SMS.
 Lead: ${(lead.name || "").split(" ")[0]}, interested in ${lead.product || "insurance"}, from ${lead.source || "online"}.
@@ -292,7 +319,7 @@ app.get("/health", (req, res) => {
 });
 
 // Receive new leads
-app.post("/ingest", async (req, res) => {
+app.post("/ingest", requireApiKey, async (req, res) => {
   try {
     const b = req.body;
     const name    = b.name || `${b.first_name || ""} ${b.last_name || ""}`.trim() || b.full_name || "Friend";
@@ -333,7 +360,7 @@ app.post("/ingest", async (req, res) => {
 });
 
 // Twilio inbound SMS
-app.post("/sms/inbound", async (req, res) => {
+app.post("/sms/inbound", validateTwilioSignature, async (req, res) => {
   res.set("Content-Type", "text/xml");
   res.send("<Response></Response>");
 
@@ -376,9 +403,11 @@ app.post("/sms/inbound", async (req, res) => {
     let replyText;
 
     if (!isOfficeOpen()) {
-      // Check if we already sent an after-hours message to this lead tonight
-      const tonightStart = new Date();
-      tonightStart.setHours(0, 0, 0, 0);
+      // Check if we already sent an after-hours message to this lead tonight (midnight Central)
+      const offsetMs     = centralOffsetMs();
+      const centralNow   = new Date(new Date() - offsetMs);
+      centralNow.setHours(0, 0, 0, 0);
+      const tonightStart = new Date(centralNow.getTime() + offsetMs);
 
       const { data: afterHoursMsgs } = await supabase
         .from("messages")
@@ -432,12 +461,14 @@ app.post("/sms/inbound", async (req, res) => {
       await logMessage(lead.id, "outbound", replyText, sid);
 
       if (wantsCallback) {
-        const callbackTime = new Date();
+        const offsetMs   = centralOffsetMs();
+        const centralNow = new Date(new Date() - offsetMs); // "clock" in Central Time
 
         // Check for "in X minutes/mins/min"
         const minuteMatch = lowerMsg.match(/in (\d+)\s*min/);
+        let callbackTime;
         if (minuteMatch) {
-          callbackTime.setMinutes(callbackTime.getMinutes() + parseInt(minuteMatch[1]));
+          callbackTime = new Date(Date.now() + parseInt(minuteMatch[1]) * 60000);
           console.log(`⏰ Scheduling callback in ${minuteMatch[1]} minutes`);
         } else {
           const timeMatch = body.match(/(\d{1,2}):(\d{2})\s*(am|pm)?/i) ||
@@ -449,14 +480,18 @@ app.post("/sms/inbound", async (req, res) => {
             if (meridiem === "pm" && hour !== 12) hour += 12;
             if (meridiem === "am" && hour === 12) hour = 0;
             if (!meridiem && hour < 8) hour += 12;
-            callbackTime.setHours(hour, mins, 0, 0);
-            if (callbackTime < new Date()) {
-              callbackTime.setDate(callbackTime.getDate() + 1);
-            }
+            // Build the target time as Central, then convert to UTC
+            const centralTarget = new Date(centralNow);
+            centralTarget.setHours(hour, mins, 0, 0);
+            if (centralTarget <= centralNow) centralTarget.setDate(centralTarget.getDate() + 1);
+            callbackTime = new Date(centralTarget.getTime() + offsetMs);
           } else {
-            callbackTime.setDate(callbackTime.getDate() + 1);
-            callbackTime.setHours(9, 0, 0, 0);
-            console.log(`⏰ No specific time detected — scheduling for tomorrow 9am`);
+            // Default: tomorrow 9am Central
+            const centralTomorrow = new Date(centralNow);
+            centralTomorrow.setDate(centralTomorrow.getDate() + 1);
+            centralTomorrow.setHours(9, 0, 0, 0);
+            callbackTime = new Date(centralTomorrow.getTime() + offsetMs);
+            console.log(`⏰ No specific time detected — scheduling for tomorrow 9am Central`);
           }
         }
 
@@ -482,12 +517,12 @@ app.post("/sms/inbound", async (req, res) => {
 });
 
 // Warm transfer
-app.post("/transfer/:leadId", async (req, res) => {
+app.post("/transfer/:leadId", requireApiKey, async (req, res) => {
   try {
     const { data: lead } = await supabase.from("leads").select("*").eq("id", req.params.leadId).single();
     if (!lead) return res.status(404).json({ error: "Not found" });
 
-    const msg = `Hi ${(lead.name || "").split(" ")[0]}! My colleague is calling you right now to get your quote — please pick up! 📞`;
+    const msg = `Hi ${(lead.name || "").split(" ")[0]}, my colleague is calling you right now to get your quote — please pick up!`;
     const sid = await sendSMS(lead.phone, msg);
     await logMessage(lead.id, "outbound", msg, sid);
     await updateLead(lead.id, { status: "transferred" });
@@ -499,7 +534,7 @@ app.post("/transfer/:leadId", async (req, res) => {
 });
 
 // Get all leads
-app.get("/leads", async (req, res) => {
+app.get("/leads", requireApiKey, async (req, res) => {
   const { data, error } = await supabase.from("leads").select("*")
     .not("status", "eq", "opted_out")
     .order("created_at", { ascending: false });
@@ -660,7 +695,7 @@ function getCadenceKey(current, target) {
 // Add single client to cross-sell
 // POST /crosssell/add
 // { client_name, client_phone, current_lines, target_line }
-app.post("/crosssell/add", async (req, res) => {
+app.post("/crosssell/add", requireApiKey, async (req, res) => {
   try {
     const { client_name, client_phone, client_email, current_lines, target_line } = req.body;
     const cadenceKey = getCadenceKey(current_lines, target_line);
@@ -680,7 +715,7 @@ app.post("/crosssell/add", async (req, res) => {
 // Bulk upload book for cross-sell
 // POST /crosssell/bulk
 // { clients: [{ client_name, client_phone, current_lines, target_line }] }
-app.post("/crosssell/bulk", async (req, res) => {
+app.post("/crosssell/bulk", requireApiKey, async (req, res) => {
   try {
     const { clients } = req.body;
     let queued = 0, skipped = 0;
@@ -699,7 +734,7 @@ app.post("/crosssell/bulk", async (req, res) => {
 // Add single lapsed client
 // POST /winback/add
 // { client_name, client_phone, product, renewal_date?, left_reason? }
-app.post("/winback/add", async (req, res) => {
+app.post("/winback/add", requireApiKey, async (req, res) => {
   try {
     const { client_name, client_phone, client_email, product, renewal_date, left_reason } = req.body;
     const { data, error } = await supabase.from("win_back")
@@ -715,7 +750,7 @@ app.post("/winback/add", async (req, res) => {
 // Bulk upload lapsed clients
 // POST /winback/bulk
 // { clients: [{ client_name, client_phone, product, renewal_date }] }
-app.post("/winback/bulk", async (req, res) => {
+app.post("/winback/bulk", requireApiKey, async (req, res) => {
   try {
     const { clients } = req.body;
     let queued = 0;
@@ -728,7 +763,7 @@ app.post("/winback/bulk", async (req, res) => {
 });
 
 // Mark win-back as converted
-app.post("/winback/won/:id", async (req, res) => {
+app.post("/winback/won/:id", requireApiKey, async (req, res) => {
   await supabase.from("win_back").update({ status: "converted" }).eq("id", req.params.id);
   res.json({ status: "ok" });
 });
@@ -738,7 +773,7 @@ app.post("/winback/won/:id", async (req, res) => {
 // Trigger when you send a quote
 // POST /quote/sent
 // { client_name, client_phone, product, quoted_amount? }
-app.post("/quote/sent", async (req, res) => {
+app.post("/quote/sent", requireApiKey, async (req, res) => {
   try {
     const { client_name, client_phone, client_email, product, quoted_amount } = req.body;
     const { data, error } = await supabase.from("quote_followup")
@@ -752,7 +787,7 @@ app.post("/quote/sent", async (req, res) => {
 });
 
 // Mark quote as won — stops follow-up
-app.post("/quote/closed", async (req, res) => {
+app.post("/quote/closed", requireApiKey, async (req, res) => {
   try {
     const { client_phone } = req.body;
     await supabase.from("quote_followup")
@@ -764,7 +799,7 @@ app.post("/quote/closed", async (req, res) => {
 });
 
 // Campaign stats
-app.get("/campaigns/stats", async (req, res) => {
+app.get("/campaigns/stats", requireApiKey, async (req, res) => {
   const [cs, qf, wb] = await Promise.all([
     supabase.from("cross_sell").select("status"),
     supabase.from("quote_followup").select("status"),
