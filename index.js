@@ -6,6 +6,7 @@ import twilio     from "twilio";
 import Anthropic  from "@anthropic-ai/sdk";
 import { createClient } from "@supabase/supabase-js";
 import cron       from "node-cron";
+import ws         from "ws";
 
 const app = express();
 app.use(express.json());
@@ -41,7 +42,9 @@ function validateTwilioSignature(req, res, next) {
 // Clients
 const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 const anthropic    = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const supabase     = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+const supabase     = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, {
+  realtime: { transport: ws },
+});
 
 // Settings
 const S = {
