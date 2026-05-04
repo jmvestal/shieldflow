@@ -28,7 +28,9 @@ function requireApiKey(req, res, next) {
 function validateTwilioSignature(req, res, next) {
   const authToken  = process.env.TWILIO_AUTH_TOKEN;
   const signature  = req.headers["x-twilio-signature"] || "";
-  const url        = `${req.protocol}://${req.get("host")}${req.originalUrl}`;
+  // Use the forwarded proto header so it works correctly behind Cloudflare/Render proxy
+  const proto      = req.headers["x-forwarded-proto"] || req.protocol;
+  const url        = `${proto}://${req.get("host")}${req.originalUrl}`;
   if (!twilio.validateRequest(authToken, signature, url, req.body)) {
     console.warn("⚠️  Invalid Twilio signature rejected");
     return res.status(403).send("Forbidden");
