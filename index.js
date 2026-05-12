@@ -12,11 +12,36 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Returns the ms offset between UTC and America/Chicago right now (handles DST)
-function centralOffsetMs() {
-  const now     = new Date();
-  const central = new Date(now.toLocaleString("en-US", { timeZone: "America/Chicago" }));
-  return now.getTime() - central.getTime();
+// Reliably get current time parts in America/Chicago using Intl (no locale string parsing)
+function getCentralParts() {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago",
+    hour:    "2-digit",
+    minute:  "2-digit",
+    weekday: "short",
+    hour12:  false,
+  }).formatToParts(now).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
+  const hour   = parseInt(parts.hour);   // 0-23
+  const minute = parseInt(parts.minute); // 0-59
+  const dayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const day    = dayMap[parts.weekday];  // 0=Sun … 6=Sat
+  return { hour, minute, day, now };
+}
+
+// UTC timestamp of midnight Central Time today
+function getCentralMidnightUTC() {
+  const { hour, minute, now } = getCentralParts();
+  const elapsedMs = (hour * 60 + minute) * 60000 + (now.getUTCSeconds() * 1000 + now.getUTCMilliseconds());
+  return new Date(now.getTime() - elapsedMs);
+}
+
+// Convert a Central Time hour/minute to a UTC Date (rolls to tomorrow if already past)
+function centralTimeToUTC(cHour, cMin) {
+  const { now } = getCentralParts();
+  const target = new Date(getCentralMidnightUTC().getTime() + (cHour * 60 + cMin) * 60000);
+  if (target <= now) target.setUTCDate(target.getUTCDate() + 1);
+  return target;
 }
 
 // API key auth for non-Twilio endpoints (disabled for testing)
@@ -55,10 +80,7 @@ const S = {
 };
 
 function getAfterHoursMsg(lead) {
-  const now         = new Date();
-  const central     = new Date(now.toLocaleString("en-US", { timeZone: "America/Chicago" }));
-  const hour        = central.getHours();
-  const day         = central.getDay(); // 0=Sun, 6=Sat
+  const { hour, day } = getCentralParts();
   const name        = (lead.name || "").split(" ")[0] || "there";
 
   // Figure out next open time
@@ -141,12 +163,10 @@ function fill(template, lead) {
 }
 
 function isOfficeOpen() {
-  // Convert to Central Time (UTC-5 standard, UTC-6 daylight)
-  const now        = new Date();
-  const centralTime = new Date(now.toLocaleString("en-US", { timeZone: "America/Chicago" }));
-  const day  = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][centralTime.getDay()];
+  const { hour, minute, day: dayNum } = getCentralParts();
+  const day = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][dayNum];
   if (!S.officeHours.days.includes(day)) return false;
-  const mins = centralTime.getHours() * 60 + centralTime.getMinutes();
+  const mins = hour * 60 + minute;
   if (day === "Sat") {
     const [sh, sm] = S.saturdayHours.start.split(":").map(Number);
     const [eh, em] = S.saturdayHours.end.split(":").map(Number);
@@ -185,11 +205,7 @@ async function getAIReply(lead, incomingMessage) {
   }));
   history.push({ role: "user", content: incomingMessage });
 
-  const centralTime = new Date().toLocaleString("en-US", { timeZone: "America/Chicago" });
-  const centralDate = new Date(centralTime);
-  const centralHour = centralDate.getHours();
-  const centralMins = centralDate.getMinutes();
-  const centralDay  = centralDate.getDay();
+  const { hour: centralHour, minute: centralMins, day: centralDay } = getCentralParts();
   const isFriday    = centralDay === 5;
   const isMidWeek   = centralDay === 3;
   const isLateWeek  = centralDay === 4;
@@ -408,10 +424,7 @@ app.post("/sms/inbound", validateTwilioSignature, async (req, res) => {
 
     if (!isOfficeOpen()) {
       // Check if we already sent an after-hours message to this lead tonight (midnight Central)
-      const offsetMs     = centralOffsetMs();
-      const centralNow   = new Date(new Date() - offsetMs);
-      centralNow.setHours(0, 0, 0, 0);
-      const tonightStart = new Date(centralNow.getTime() + offsetMs);
+      const tonightStart = getCentralMidnightUTC();
 
       const { data: afterHoursMsgs } = await supabase
         .from("messages")
@@ -465,9 +478,6 @@ app.post("/sms/inbound", validateTwilioSignature, async (req, res) => {
       await logMessage(lead.id, "outbound", replyText, sid);
 
       if (wantsCallback) {
-        const offsetMs   = centralOffsetMs();
-        const centralNow = new Date(new Date() - offsetMs); // "clock" in Central Time
-
         // Check for "in X minutes/mins/min"
         const minuteMatch = lowerMsg.match(/in (\d+)\s*min/);
         let callbackTime;
@@ -484,17 +494,12 @@ app.post("/sms/inbound", validateTwilioSignature, async (req, res) => {
             if (meridiem === "pm" && hour !== 12) hour += 12;
             if (meridiem === "am" && hour === 12) hour = 0;
             if (!meridiem && hour < 8) hour += 12;
-            // Build the target time as Central, then convert to UTC
-            const centralTarget = new Date(centralNow);
-            centralTarget.setHours(hour, mins, 0, 0);
-            if (centralTarget <= centralNow) centralTarget.setDate(centralTarget.getDate() + 1);
-            callbackTime = new Date(centralTarget.getTime() + offsetMs);
+            callbackTime = centralTimeToUTC(hour, mins);
           } else {
             // Default: tomorrow 9am Central
-            const centralTomorrow = new Date(centralNow);
-            centralTomorrow.setDate(centralTomorrow.getDate() + 1);
-            centralTomorrow.setHours(9, 0, 0, 0);
-            callbackTime = new Date(centralTomorrow.getTime() + offsetMs);
+            callbackTime = centralTimeToUTC(9, 0);
+            // centralTimeToUTC rolls to tomorrow automatically if 9am already passed
+            callbackTime.setUTCDate(callbackTime.getUTCDate() + 1);
             console.log(`⏰ No specific time detected — scheduling for tomorrow 9am Central`);
           }
         }
@@ -552,10 +557,7 @@ app.get("/leads", requireApiKey, async (req, res) => {
 cron.schedule("*/10 * * * *", async () => {
   try {
     // Use Central time for all time checks
-    const centralTime = new Date().toLocaleString("en-US", { timeZone: "America/Chicago" });
-    const centralDate = new Date(centralTime);
-    const centralHour = centralDate.getHours();
-    const centralDay  = centralDate.getDay(); // 0=Sun, 6=Sat
+    const { hour: centralHour, day: centralDay } = getCentralParts();
 
     // No outbound cadence texts on weekends
     if (centralDay === 0 || centralDay === 6) {
@@ -563,8 +565,8 @@ cron.schedule("*/10 * * * *", async () => {
       return;
     }
 
-    // No outbound cadence texts before 8am or after 6pm on weekdays
-    if (centralHour < 8 || centralHour >= 18) {
+    // No outbound cadence texts before 8am or after 5pm Central
+    if (centralHour < 8 || centralHour >= 17) {
       console.log("⏸ Outside outbound hours — no cadence texts right now");
       return;
     }
@@ -612,9 +614,8 @@ cron.schedule("* * * * *", async () => {
       .not("callback_time", "is", null);
 
     for (const lead of callbacks || []) {
-      const centralNow = new Date().toLocaleString("en-US", { timeZone: "America/Chicago" });
-      const hour       = new Date(centralNow).getHours();
-      const greeting   = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+      const { hour } = getCentralParts();
+      const greeting  = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
       const msg        = `${greeting} ${(lead.name || "").split(" ")[0]}, this is John Michael following up as promised. Is now still a good time to chat about your ${lead.product || "insurance"} quote?`;
       await sendSMS(lead.phone, msg);
       await logMessage(lead.id, "outbound", msg);
@@ -821,16 +822,13 @@ app.get("/campaigns/stats", requireApiKey, async (req, res) => {
 // OUTBOUND RULES: Mon-Fri 8am-6pm Central only. No weekends.
 cron.schedule("*/15 * * * *", async () => {
   try {
-    const centralTime = new Date().toLocaleString("en-US", { timeZone: "America/Chicago" });
-    const centralDate = new Date(centralTime);
-    const centralHour = centralDate.getHours();
-    const centralDay  = centralDate.getDay();
+    const { hour: centralHour, day: centralDay } = getCentralParts();
 
     // No outbound on weekends
     if (centralDay === 0 || centralDay === 6) return;
 
-    // No outbound before 8am or after 6pm Central
-    if (centralHour < 8 || centralHour >= 18) return;
+    // No outbound before 8am or after 5pm Central
+    if (centralHour < 8 || centralHour >= 17) return;
 
     const now = Date.now();
 
